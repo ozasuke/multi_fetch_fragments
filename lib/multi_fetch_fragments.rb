@@ -56,6 +56,7 @@ module MultiFetchFragments
           end
 
           # sort the result according to the keys that were fed in, cache the non-cached results
+          results = []
           mutable_keys.each do |key|
 
             cached_value = result_hash[key]
@@ -68,12 +69,12 @@ module MultiFetchFragments
               results << non_cached_result
             end
           end
+          results.join(spacer).html_safe
         else
           cache_collection_render(payload) do
-            results = @template ? collection_with_template : collection_without_template
-          end
+            @template ? collection_with_template : collection_without_template
+          end.join(spacer).html_safe
         end
-        results.join(spacer).html_safe            
       end
     end
 
