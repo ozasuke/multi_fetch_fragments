@@ -7,76 +7,76 @@ module MultiFetchFragments
 
   private
     def render_collection
+      Rails.logger.info('render_collection')
+      instrument(:collection, count: @collection.size) do |payload|
+        return nil if @collection.blank?
 
-      return nil if @collection.blank?
+        if @options.key?(:spacer_template)
+          spacer = find_template(@options[:spacer_template], @locals.keys).render(@view, @locals)
+        end
 
-      if @options.key?(:spacer_template)
-        spacer = find_template(@options[:spacer_template]).render(@view, @locals)
-      end
+        if cache_collection?
 
-      results = []
+          additional_cache_options = @options[:cache_options] || @locals[:cache_options] || {}
+          keys_to_collection_map = {}
 
-      if cache_collection?
+          @collection.each do |item|
+            key = @options[:cache].respond_to?(:call) ? @options[:cache].call(item) : item
 
-        additional_cache_options = @options[:cache_options] || @locals[:cache_options] || {}
-        keys_to_collection_map = {}
+            key_with_optional_digest = nil
+            if defined?(@view.fragment_name_with_digest)
+              key_with_optional_digest = @view.fragment_name_with_digest(key, @view.view_cache_dependencies)
+            elsif defined?(@view.cache_fragment_name)
+              key_with_optional_digest = @view.cache_fragment_name(key)
+            else
+              key_with_optional_digest = key
+            end
 
-        @collection.each do |item|
-          key = @options[:cache].respond_to?(:call) ? @options[:cache].call(item) : item
 
-          key_with_optional_digest = nil
-          if defined?(@view.fragment_name_with_digest)
-            key_with_optional_digest = @view.fragment_name_with_digest(key, @view.view_cache_dependencies)
-          elsif defined?(@view.cache_fragment_name)
-            key_with_optional_digest = @view.cache_fragment_name(key)
-          else
-            key_with_optional_digest = key
+            expanded_key = fragment_cache_key(key_with_optional_digest)
+
+            keys_to_collection_map[expanded_key] = item
           end
 
+          # cache.read_multi & cache.write interfaces may require mutable keys, ie. dalli 2.6.0
+          mutable_keys = keys_to_collection_map.keys.collect { |key| key.dup }
+          result_hash = Rails.cache.read_multi(*mutable_keys)
 
-          expanded_key = fragment_cache_key(key_with_optional_digest)
+          # if we had a cached value, we don't need to render that object from the collection.
+          # if it wasn't cached, we need to render those objects as before
+          @collection = (keys_to_collection_map.keys - result_hash.keys).map do |key|
+            keys_to_collection_map[key]
+          end
 
-          keys_to_collection_map[expanded_key] = item
-        end
+          non_cached_results = []
 
-        # cache.read_multi & cache.write interfaces may require mutable keys, ie. dalli 2.6.0
-        mutable_keys = keys_to_collection_map.keys.collect { |key| key.dup }
+          # sequentially render any non-cached objects remaining
+          if @collection.any?
+            non_cached_results = @template ? collection_with_template : collection_without_template
+          end
 
-        result_hash = Rails.cache.read_multi(*mutable_keys)
+          # sort the result according to the keys that were fed in, cache the non-cached results
+          mutable_keys.each do |key|
 
-        # if we had a cached value, we don't need to render that object from the collection.
-        # if it wasn't cached, we need to render those objects as before
-        @collection = (keys_to_collection_map.keys - result_hash.keys).map do |key|
-          keys_to_collection_map[key]
-        end
+            cached_value = result_hash[key]
+            if cached_value
+              results << cached_value
+            else
+              non_cached_result = non_cached_results.shift
+              Rails.cache.write(key, non_cached_result, additional_cache_options)
 
-        non_cached_results = []
-
-        # sequentially render any non-cached objects remaining
-        if @collection.any?
-          non_cached_results = @template ? collection_with_template : collection_without_template
-        end
-
-        # sort the result according to the keys that were fed in, cache the non-cached results
-        mutable_keys.each do |key|
-
-          cached_value = result_hash[key]
-          if cached_value
-            results << cached_value
-          else
-            non_cached_result = non_cached_results.shift
-            Rails.cache.write(key, non_cached_result, additional_cache_options)
-
-            results << non_cached_result
+              results << non_cached_result
+            end
+          end
+        else
+          results = cache_collection_render(payload) do
+            @template ? collection_with_template : collection_without_template
           end
         end
-
-      else
-        results = @template ? collection_with_template : collection_without_template
+        results.join(spacer).html_safe            
       end
-
-      results.join(spacer).html_safe
     end
+
 
     def cache_collection?
       cache_option = @options[:cache].presence || @locals[:cache].presence
