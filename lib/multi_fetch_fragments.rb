@@ -69,8 +69,8 @@ module MultiFetchFragments
             end
           end
         else
-          results = cache_collection_render(payload) do
-            @template ? collection_with_template : collection_without_template
+          cache_collection_render(payload) do
+            results = @template ? collection_with_template : collection_without_template
           end
         end
         results.join(spacer).html_safe            
